@@ -1,0 +1,57 @@
+<featureType>
+  <name>sqlview_layer_id</name>
+  <nativeName>sqlview_layer_id</nativeName>
+  <title>sqlview_layer_id</title>
+  <srs>EPSG:4326</srs>
+  <metadata>
+    <entry key="JDBC_VIRTUAL_TABLE">
+      <virtualTable>
+        <name>sqlview_layer_id</name>
+        <sql>WITH authorized_area AS (&#10;
+    SELECT&#10;
+        ra.geom AS area_geom,&#10;
+        rl.area_ignore_flag,&#10;
+        acl.id&#10;
+    FROM&#10;
+        db_mst_schema.mst_app_client_list acl&#10;
+    INNER JOIN db_mst_schema.mst_authorization_member am&#10;
+        ON acl.id = am.authorization_client_id&#10;
+    INNER JOIN db_mst_schema.mst_authorization_group ag&#10;
+        ON am.authorization_group_id = ag.authorization_group_id&#10;
+    INNER JOIN db_mst_schema.mst_referenceable_layer_facility rl&#10;
+        ON ag.authorization_group_id = rl.authorization_group_id&#10;
+    INNER JOIN db_mst_schema.mst_reference_area ra&#10;
+        ON ag.area_id = ra.area_id&#10;
+    WHERE&#10;
+        acl.client_id = '%client_id%'&#10;
+        AND rl.layer_id = 'sqlview_layer_id'&#10;
+)&#10;
+SELECT&#10;
+    mv.*&#10;
+FROM&#10;
+    db_mv_3d_schema.sqlview_layer_id mv&#10;
+CROSS JOIN authorized_area&#10;
+WHERE&#10;
+    CASE&#10;
+        WHEN authorized_area.area_ignore_flag = '1' THEN TRUE&#10;
+        WHEN authorized_area.area_ignore_flag = '0' THEN&#10;
+            mv.geom &amp;&amp; authorized_area.area_geom&#10;
+            AND ST_Intersects(mv.geom, authorized_area.area_geom)&#10;
+        ELSE FALSE&#10;
+    END&#10;
+        </sql>
+        <keyColumn>id</keyColumn>
+        <geometry>
+          <name>geom</name>
+          <type>Geometry</type>
+          <srid>4326</srid>
+        </geometry>
+        <parameter>
+          <name>client_id</name>
+          <defaultValue>default_client_id</defaultValue>
+          <type>String</type>
+        </parameter>
+      </virtualTable>
+    </entry>
+  </metadata>
+</featureType>
