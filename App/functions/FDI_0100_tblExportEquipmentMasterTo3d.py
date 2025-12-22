@@ -1,6 +1,6 @@
 """
 
-FDI_0100_01_tblExportEquipmentMasterTo3d.py
+FDI_0100_tblExportEquipmentMasterTo3d.py
 
 処理名:
     TBL出力（設備データ管理マスタDB→3D用最終断面テーブル）
@@ -20,7 +20,8 @@ import sys
 import traceback
 
 import requests
-from core.checkMstConsistency import CheckMstConsistency
+from common.CD0201_updateStartEndDateOfUse import update_start_and_end_date_of_use
+from common.CD0202_updateEndDateOfUse import update_end_date_of_use
 from core.config_reader import read_config
 from core.constants import Constants
 from core.database import Database
@@ -28,10 +29,7 @@ from core.geoserverRequest import GeoServerRequest
 from core.logger import LogManager
 from core.secretProperties import SecretPropertiesSingleton
 from core.validations import Validations
-from functions.common.CD0201_updateStartEndDateOfUse import (
-    update_start_and_end_date_of_use,
-)
-from functions.common.CD0202_updateEndDateOfUse import update_end_date_of_use
+from util.checkMstConsistency import CheckMstConsistency
 
 log_manager = LogManager()
 logger = log_manager.get_logger(
@@ -262,7 +260,7 @@ def create_or_refresh_matview(matview_no_list, matview_yes_list):
                     f"ON {eq_master_table}.{col} = code_{col}.code "
                     f"AND code_{col}.physical_column_name = '{col}'"
                 )
-        select_clauses.append(f"ST_Force3D({eq_master_table}.geom) AS geom")
+        select_clauses.append(f"{eq_master_table}.geom AS geom")
         select_clause = ", ".join(select_clauses)
         join_clause = " ".join(join_clauses)
 
@@ -370,7 +368,7 @@ def create_sqlview_and_register(layer_ids):
     # 9-1. SQLView定義の作成
     try:
         template_path = os.path.join(
-            os.path.dirname(__file__), "../geoServerSettings/sqlview_2d.xml"
+            os.path.dirname(__file__), "../geoServerSettings/sqlview_3d.xml"
         )
         with open(template_path, "r", encoding="utf-8") as f:
             xml_template = f.read()
@@ -383,7 +381,7 @@ def create_sqlview_and_register(layer_ids):
 
     # 9-2. ベクタレイヤ定義追加のREST APIを実行
     db_mst_schema = secret_props.get("db_mst_schema")
-    db_mv_3d_schema = secret_props.get("db_mv_3d_schema")
+    db_mv_3d_schema = secret_props.get("db_mv_schema")
     domain_name = secret_props.get("domain_name")
     geoserver_workspace = secret_props.get("geoserver_workspace")
     postgis_store = secret_props.get("postgis_store_name")
