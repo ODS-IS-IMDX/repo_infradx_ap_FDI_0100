@@ -29,7 +29,7 @@
 SELECT&#10;
     mv.*&#10;
 FROM&#10;
-    db_mv_3d_schema.sqlview_layer_id mv&#10;
+    db_mv_schema.sqlview_layer_id mv&#10;
 CROSS JOIN authorized_area&#10;
 WHERE&#10;
     CASE&#10;

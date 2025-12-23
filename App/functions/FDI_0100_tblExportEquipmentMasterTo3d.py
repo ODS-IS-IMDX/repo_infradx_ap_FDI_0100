@@ -381,7 +381,7 @@ def create_sqlview_and_register(layer_ids):
 
     # 9-2. ベクタレイヤ定義追加のREST APIを実行
     db_mst_schema = secret_props.get("db_mst_schema")
-    db_mv_3d_schema = secret_props.get("db_mv_schema")
+    db_mv_3d_schema = secret_props.get("db_mv_3d_schema")
     domain_name = secret_props.get("domain_name")
     geoserver_workspace = secret_props.get("geoserver_workspace")
     postgis_store = secret_props.get("postgis_store_name")
@@ -398,7 +398,7 @@ def create_sqlview_and_register(layer_ids):
         try:
             xml_body = xml_template.replace("sqlview_layer_id", layer_id)
             xml_body = xml_body.replace("db_mst_schema", db_mst_schema)
-            xml_body = xml_body.replace("db_mv_3d_schema", db_mv_3d_schema)
+            xml_body = xml_body.replace("db_mv_schema", db_mv_3d_schema)
             response = requests.post(
                 url,
                 auth=(geoserver_username, geoserver_password),
