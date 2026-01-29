@@ -304,6 +304,23 @@ def create_or_refresh_matview(matview_no_list, matview_yes_list):
                 return
         db_connection.commit()
 
+        # VACUUM ANALYZE実行
+        all_layer_ids = matview_no_list + matview_yes_list
+        for layer_id in all_layer_ids:
+            vacuum_query = f"VACUUM ANALYZE {db_mv_3d_schema}.{layer_id}"
+            try:
+                Database.execute_query(
+                    db_connection,
+                    logger,
+                    vacuum_query,
+                    commit=True,
+                    raise_exception=True,
+                )
+            except Exception:
+                process_code = Constants.RETURNCODE_WARNING
+                logger.warning("BPW0021", db_host, vacuum_query)
+                return
+
 
 # 7. レイヤ定義存在確認
 def check_layer_definition_exists(layer_ids):
