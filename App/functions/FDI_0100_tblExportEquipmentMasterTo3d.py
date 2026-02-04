@@ -44,6 +44,15 @@ secret_props = SecretPropertiesSingleton(secret_name, config, logger)
 # グローバル終了コード（0:正常, 1:異常, 2:警告）
 process_code = Constants.RETURNCODE_SUCCESS
 
+# ジオメトリタイプ関連の定数
+POSTGIS_TYPE_MAP = {
+    "point": "ST_Point",
+    "line": "ST_LineString",
+    "polygon": "ST_Polygon",
+}
+
+GEOMETRY_TYPES = ["point", "line", "polygon"]
+
 
 # 起動パラメータを受け取る関数
 def parse_args():
@@ -250,8 +259,12 @@ def create_or_refresh_matview(matview_no_list, matview_yes_list, layer_info_map)
         layer_info = layer_info_map.get(layer_id)
         equipment_item = layer_info.get("fac_subitem_eng")
         provider_id = layer_info.get("provider_id")
+        geom_type = layer_info.get("geometry_type")
         eq_master_table = layer_info.get("fac_data_master_table_name")
 
+        where_clause = ""
+        postgis_type = POSTGIS_TYPE_MAP.get(geom_type)
+        where_clause = f"WHERE ST_GeometryType(geom) = '{postgis_type}'"
         query = (
             f"SELECT ma.physical_column_name "
             f"FROM {db_mst_schema}.mst_final_cross_section_authorization fca "
@@ -326,7 +339,8 @@ def create_or_refresh_matview(matview_no_list, matview_yes_list, layer_info_map)
         ddl = (
             f"CREATE MATERIALIZED VIEW {db_mv_3d_schema}.{layer_id} AS "
             f"SELECT {select_clause} "
-            f"FROM {db_fac_schema}.{eq_master_table} {join_clause}"
+            f"FROM {db_fac_schema}.{eq_master_table} {join_clause} "
+            f"{where_clause}"
         )
         ddl_queries.append(ddl)
 
