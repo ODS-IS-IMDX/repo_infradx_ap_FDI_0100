@@ -12,6 +12,7 @@ FDI_0100_tblExportEquipmentMasterTo3d.py
 """
 
 import argparse
+import json
 import os
 import platform
 import re
@@ -42,6 +43,15 @@ secret_props = SecretPropertiesSingleton(secret_name, config, logger)
 
 # グローバル終了コード（0:正常, 1:異常, 2:警告）
 process_code = Constants.RETURNCODE_SUCCESS
+
+# ジオメトリタイプ関連の定数
+POSTGIS_TYPE_MAP = {
+    "point": "ST_Point",
+    "line": "ST_LineString",
+    "polygon": "ST_Polygon",
+}
+
+GEOMETRY_TYPES = ["point", "line", "polygon"]
 
 
 # 起動パラメータを受け取る関数
@@ -105,7 +115,59 @@ def check_master_consistency(layer_ids):
             return
 
 
-# 3. 取込開始日時・終了日時更新
+# 3. レイヤ情報取得
+def fetch_layer_info(layer_ids):
+    global secret_props
+    schema_name = secret_props.get("db_mst_schema")
+    db_connection = Database.get_mstdb_connection(logger)
+    query = (
+        "SELECT json_object_agg("
+        "    v.layer_id,"
+        "    json_build_object("
+        "        'fac_subitem_id', v.fac_subitem_id,"
+        "        'provider_id', v.provider_id,"
+        "        'fac_subitem_eng', fs.fac_subitem_eng,"
+        "        'geometry_type', v.geometry_type"
+        "    )"
+        ") AS layer_info_json "
+        f"FROM {schema_name}.mst_vector_layer v "
+        f"INNER JOIN {schema_name}.mst_fac_subitem fs "
+        "    ON v.fac_subitem_id = fs.fac_subitem_id "
+        "WHERE v.layer_id = ANY(%s)"
+    )
+    result = Database.execute_query(
+        db_connection,
+        logger,
+        query,
+        params=(layer_ids,),
+        fetchone=True,
+    )
+    layer_info_json = result
+    layer_info_map = {}
+    if layer_info_json:
+        if isinstance(layer_info_json, str):
+            layer_info_map = json.loads(layer_info_json)
+        else:
+            layer_info_map = layer_info_json
+
+    missing_layer_ids = sorted(set(layer_ids) - set(layer_info_map.keys()))
+    if missing_layer_ids:
+        logger.error("BPE0017", "存在しないレイヤID", ",".join(missing_layer_ids))
+        logger.process_error_end()
+
+    for layer_id in layer_info_map:
+        info = layer_info_map[layer_id]
+        fac_subitem_eng = info.get("fac_subitem_eng")
+        provider_id = info.get("provider_id")
+        if fac_subitem_eng is None or provider_id is None:
+            logger.error("BPE0017", "存在しないレイヤID", layer_id)
+            logger.process_error_end()
+        info["fac_data_master_table_name"] = f"data_{fac_subitem_eng}_{provider_id}"
+
+    return layer_info_map
+
+
+# 4. 取込開始日時・終了日時更新
 def update_import_datetime(layer_ids):
     global process_code
     result = update_start_and_end_date_of_use(layer_ids)
@@ -117,14 +179,14 @@ def update_import_datetime(layer_ids):
     return result
 
 
-# 4. マテリアライズドビュー存在確認
-def check_matview_exists(layer_id):
+# 5. マテリアライズドビュー存在確認
+def check_matview_exists(layer_ids):
     global secret_props
     db_mv_hosts = [h.strip() for h in secret_props.get("db_mv_host").split(",")]
     db_mv_3d_schema = secret_props.get("db_mv_3d_schema")
     matview_no_list = []
     matview_yes_list = []
-    for layer_id in layer_id:
+    for layer_id in layer_ids:
         for db_host in db_mv_hosts:
             query = (
                 "SELECT EXISTS("
@@ -148,11 +210,16 @@ def check_matview_exists(layer_id):
     return matview_no_list, matview_yes_list
 
 
-# 5. 設備データ管理マスタDB存在確認
-def check_equipment_master_table_exists(layer_ids):
+# 6. 設備データ管理マスタDB存在確認
+def check_equipment_master_table_exists(layer_ids, layer_info_map):
     global process_code
     global secret_props
-    eq_master_tables = {lid: "data_" + lid.replace("_3d", "") for lid in layer_ids}
+    eq_master_tables = {
+        lid: layer_info_map[lid]["fac_data_master_table_name"]
+        for lid in layer_ids
+        if lid in layer_info_map
+    }
+
     db_hosts = [secret_props.get("db_host")]
     db_fac_schema = secret_props.get("db_fac_schema")
     for table_name in eq_master_tables.values():
@@ -177,8 +244,8 @@ def check_equipment_master_table_exists(layer_ids):
                 return False
 
 
-# 6. マテリアライズドビュー作成・リフレッシュ
-def create_or_refresh_matview(matview_no_list, matview_yes_list):
+# 7. マテリアライズドビュー作成・リフレッシュ
+def create_or_refresh_matview(matview_no_list, matview_yes_list, layer_info_map):
     global process_code
     global secret_props
     db_mv_hosts = [h.strip() for h in secret_props.get("db_mv_host").split(",")]
@@ -188,10 +255,16 @@ def create_or_refresh_matview(matview_no_list, matview_yes_list):
     # DDL実行前にタイムアウト無制限を設定（一度だけ）
     ddl_queries = ["SET statement_timeout = 0"]
     for layer_id in matview_no_list:
-        # 6-1-1. マテリアライズドビューDDL出力項目取得
-        parts = layer_id.split("_3d_")
-        equipment_item = parts[0]
-        provider_id = parts[1] if len(parts) > 1 else ""
+        # 7-1-1. マテリアライズドビューDDL出力項目取得
+        layer_info = layer_info_map.get(layer_id)
+        equipment_item = layer_info.get("fac_subitem_eng")
+        provider_id = layer_info.get("provider_id")
+        geom_type = layer_info.get("geometry_type")
+        eq_master_table = layer_info.get("fac_data_master_table_name")
+
+        where_clause = ""
+        postgis_type = POSTGIS_TYPE_MAP.get(geom_type)
+        where_clause = f"WHERE ST_GeometryType(geom) = '{postgis_type}'"
         query = (
             f"SELECT ma.physical_column_name "
             f"FROM {db_mst_schema}.mst_final_cross_section_authorization fca "
@@ -247,8 +320,7 @@ def create_or_refresh_matview(matview_no_list, matview_yes_list):
         )
         code_columns = {row[0] for row in code_columns_result}
 
-        # 6-1-2. マテリアライズドビューDDL作成
-        eq_master_table = "data_" + layer_id.replace("_3d", "")
+        # 7-1-2. マテリアライズドビューDDL作成
         select_clauses = []
         join_clauses = []
         for col in column_names:
@@ -267,7 +339,8 @@ def create_or_refresh_matview(matview_no_list, matview_yes_list):
         ddl = (
             f"CREATE MATERIALIZED VIEW {db_mv_3d_schema}.{layer_id} AS "
             f"SELECT {select_clause} "
-            f"FROM {db_fac_schema}.{eq_master_table} {join_clause}"
+            f"FROM {db_fac_schema}.{eq_master_table} {join_clause} "
+            f"{where_clause}"
         )
         ddl_queries.append(ddl)
 
@@ -283,13 +356,13 @@ def create_or_refresh_matview(matview_no_list, matview_yes_list):
         )
         ddl_queries.append(geom_index_ddl)
 
-    # 6-2. リフレッシュクエリ生成
+    # 7-2. リフレッシュクエリ生成
     for layer_id in matview_yes_list:
         ddl_queries.append(
             f"REFRESH MATERIALIZED VIEW CONCURRENTLY {db_mv_3d_schema}.{layer_id}"
         )
 
-    # 6-3. DDL・SQLクエリ実行
+    # 7-3. DDL・SQLクエリ実行
     for db_host in db_mv_hosts:
         db_connection = Database.get_refdb_connection(db_host, logger)
         for query in ddl_queries:
@@ -309,11 +382,10 @@ def create_or_refresh_matview(matview_no_list, matview_yes_list):
         for layer_id in all_layer_ids:
             vacuum_query = f"VACUUM ANALYZE {db_mv_3d_schema}.{layer_id}"
             try:
-                Database.execute_query(
+                Database.execute_query_autocommit(
                     db_connection,
                     logger,
                     vacuum_query,
-                    commit=True,
                     raise_exception=True,
                 )
             except Exception:
@@ -322,7 +394,7 @@ def create_or_refresh_matview(matview_no_list, matview_yes_list):
                 return
 
 
-# 7. レイヤ定義存在確認
+# 8. レイヤ定義存在確認
 def check_layer_definition_exists(layer_ids):
     global process_code
     no_def_list = []
@@ -336,7 +408,7 @@ def check_layer_definition_exists(layer_ids):
     return no_def_list
 
 
-# 8. 利用開始・終了年月日過去日更新
+# 9. 利用開始・終了年月日過去日更新
 def update_layer_dates_past(layer_ids):
     global secret_props
     schema_name = secret_props.get("db_mst_schema")
@@ -377,7 +449,7 @@ def update_layer_dates_past(layer_ids):
     return start_dates, end_dates
 
 
-# 9. 配信設定
+# 10. 配信設定
 def create_sqlview_and_register(layer_ids):
     global process_code
     global secret_props
@@ -430,7 +502,7 @@ def create_sqlview_and_register(layer_ids):
             logger.error("BPE0039", traceback.format_exc())
 
 
-# 10. ベクタレイヤ矩形範囲変更
+# 11. ベクタレイヤ矩形範囲変更
 def update_layer_bbox(layer_ids):
     global process_code
     for layer_id in layer_ids:
@@ -442,7 +514,7 @@ def update_layer_bbox(layer_ids):
             logger.warning("BPW0018")
 
 
-# 11. 利用開始・終了年月日現在日更新
+# 12. 利用開始・終了年月日現在日更新
 def update_layer_dates_current(layer_ids, start_dates, end_dates):
     global secret_props
     schema_name = secret_props.get("db_mst_schema")
@@ -463,7 +535,7 @@ def update_layer_dates_current(layer_ids, start_dates, end_dates):
         )
 
 
-# 12. 取込終了日時更新
+# 13. 取込終了日時更新
 def update_import_end_datetime(layer_ids):
     global process_code
     result = update_end_date_of_use(layer_ids)
@@ -474,7 +546,7 @@ def update_import_end_datetime(layer_ids):
         logger.warning("BPW0007", "CD0202_取込終了日時更新", layer_ids)
 
 
-# 13. 取込件数更新
+# 14. 取込件数更新
 def update_import_count(layer_ids):
     global process_code
     global secret_props
@@ -492,7 +564,7 @@ def update_import_count(layer_ids):
             logger.warning("BPW0007", "CD0203_取込件数更新", layer_id)
 
 
-# 14.終了コード返却
+# 15.終了コード返却
 def end_process():
     if (
         process_code == Constants.RETURNCODE_WARNING
@@ -521,53 +593,56 @@ def main():
         if process_code == Constants.RETURNCODE_WARNING:
             return end_process()
 
-        # 3. 取込開始日時・終了日時更新
+        # 3. レイヤ情報取得
+        layer_info_map = fetch_layer_info(layer_ids)
+
+        # 4. 取込開始日時・終了日時更新
         result = update_import_datetime(layer_ids)
         if result == Constants.RETURNCODE_ERROR:
             return end_process()
 
-        # 4. マテリアライズドビュー存在確認
+        # 5. マテリアライズドビュー存在確認
         matview_no_list, matview_yes_list = check_matview_exists(layer_ids)
 
-        # 5. 設備データ管理マスタDB存在確認
-        check_equipment_master_table_exists(matview_no_list)
+        # 6. 設備データ管理マスタDB存在確認
+        check_equipment_master_table_exists(matview_no_list, layer_info_map)
         if process_code == Constants.RETURNCODE_WARNING:
             return end_process()
 
-        # 6. マテリアライズドビュー作成・リフレッシュ
-        create_or_refresh_matview(matview_no_list, matview_yes_list)
+        # 7. マテリアライズドビュー作成・リフレッシュ
+        create_or_refresh_matview(matview_no_list, matview_yes_list, layer_info_map)
         if process_code == Constants.RETURNCODE_WARNING:
             return end_process()
 
-        # 7. レイヤ定義存在確認
+        # 8. レイヤ定義存在確認
         no_def_list = check_layer_definition_exists(layer_ids)
         if len(no_def_list) >= 1:
 
-            # 8. 利用開始・終了年月日過去日更新
+            # 9. 利用開始・終了年月日過去日更新
             start_dates, end_dates = update_layer_dates_past(no_def_list)
 
-            # 9. 配信設定
+            # 10. 配信設定
             create_sqlview_and_register(no_def_list)
             if process_code == Constants.RETURNCODE_WARNING:
                 return end_process()
 
-            # 10. ベクタレイヤ矩形範囲変更
+            # 11. ベクタレイヤ矩形範囲変更
             update_layer_bbox(no_def_list)
             if process_code == Constants.RETURNCODE_WARNING:
                 return end_process()
 
-            # 11. 利用開始・終了年月日現在日更新
+            # 12. 利用開始・終了年月日現在日更新
             update_layer_dates_current(no_def_list, start_dates, end_dates)
 
-        # 12. 取込終了日時更新
+        # 13. 取込終了日時更新
         update_import_end_datetime(layer_ids)
         if process_code == Constants.RETURNCODE_WARNING:
             return end_process()
 
-        # 13. 取込件数更新
+        # 14. 取込件数更新
         update_import_count(layer_ids)
 
-        # 14. 終了コード返却
+        # 15. 終了コード返却
         return end_process()
     except Exception:
         logger.error("BPE0009", traceback.format_exc())
