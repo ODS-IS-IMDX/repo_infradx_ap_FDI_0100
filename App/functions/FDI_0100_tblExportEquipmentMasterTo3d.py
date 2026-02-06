@@ -367,8 +367,8 @@ def create_or_refresh_matview(matview_no_list, matview_yes_list, layer_info_map)
         db_connection = Database.get_refdb_connection(db_host, logger)
         for query in ddl_queries:
             try:
-                Database.execute_query(
-                    db_connection, logger, query, commit=False, raise_exception=True
+                Database.execute_query_no_commit(
+                    db_connection, logger, query, raise_exception=True
                 )
             except Exception:
                 process_code = Constants.RETURNCODE_WARNING
