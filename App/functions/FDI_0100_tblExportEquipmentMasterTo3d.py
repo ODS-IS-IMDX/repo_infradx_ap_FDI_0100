@@ -80,12 +80,12 @@ def check_required_scripts_exist():
 
 # 1. 入力値チェック
 def validate_layer_ids(layer_ids):
-    # レイヤIDの必須チェック
-    if not layer_ids:
-        logger.error("BPE0018", "レイヤID")
-        logger.process_error_end()
-
     for layer_id in layer_ids:
+        # レイヤIDの必須チェック
+        if not layer_id:
+            logger.error("BPE0018", "レイヤID")
+            logger.process_error_end()
+
         # レイヤIDが、半角英数字とアンダースコアのみで構成されているか
         if not Validations.is_alnum_underscore(layer_id):
             logger.error("BPE0019", "レイヤID", layer_id)
