@@ -240,7 +240,7 @@ def check_equipment_master_table_exists(layer_ids, layer_info_map):
             )
             if not result:
                 process_code = Constants.RETURNCODE_WARNING
-                logger.warning("BPW0016", "設備データ管理マスタDB存在確認", table_name)
+                logger.warning("BPW0016", table_name)
                 return False
 
 
