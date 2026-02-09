@@ -207,7 +207,7 @@ def check_matview_exists(layer_ids):
                 break
             if db_host == db_mv_hosts[-1]:
                 matview_yes_list.append(layer_id)
-    return matview_no_list, matview_yes_list
+    return list(set(matview_no_list)), list(set(matview_yes_list))
 
 
 # 6. 設備データ管理マスタDB存在確認
