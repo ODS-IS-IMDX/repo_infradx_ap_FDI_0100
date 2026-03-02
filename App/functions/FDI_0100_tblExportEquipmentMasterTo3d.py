@@ -1,3 +1,5 @@
+# © 2026 NTT DATA Japan Co., Ltd. & NTT InfraNet All Rights Reserved.
+
 """
 
 FDI_0100_tblExportEquipmentMasterTo3d.py
@@ -12,7 +14,6 @@ FDI_0100_tblExportEquipmentMasterTo3d.py
 """
 
 import argparse
-import json
 import os
 import platform
 import re
@@ -121,48 +122,65 @@ def fetch_layer_info(layer_ids):
     schema_name = secret_props.get("db_mst_schema")
     db_connection = Database.get_mstdb_connection(logger)
     query = (
-        "SELECT json_object_agg("
-        "    v.layer_id,"
-        "    json_build_object("
-        "        'fac_subitem_id', v.fac_subitem_id,"
-        "        'provider_id', v.provider_id,"
-        "        'fac_subitem_eng', fs.fac_subitem_eng,"
-        "        'geometry_type', v.geometry_type"
-        "    )"
-        ") AS layer_info_json "
+        "SELECT "
+        "    v.layer_id, "
+        "    v.fac_subitem_id, "
+        "    v.provider_id, "
+        "    fs.fac_subitem_eng, "
+        "    v.geometry_type, "
+        "    fca.authorization_pattern_id "
         f"FROM {schema_name}.mst_vector_layer v "
         f"INNER JOIN {schema_name}.mst_fac_subitem fs "
         "    ON v.fac_subitem_id = fs.fac_subitem_id "
+        f"LEFT JOIN {schema_name}.mst_final_cross_section_authorization fca "
+        "    ON v.fac_subitem_id = fca.fac_subitem_id "
+        "    AND v.provider_id = fca.provider_id "
+        "    AND fca.final_cross_section_type = 2 "
         "WHERE v.layer_id = ANY(%s)"
     )
-    result = Database.execute_query(
+    results = Database.execute_query(
         db_connection,
         logger,
         query,
         params=(layer_ids,),
-        fetchone=True,
+        fetchall=True,
     )
-    layer_info_json = result
-    layer_info_map = {}
-    if layer_info_json:
-        if isinstance(layer_info_json, str):
-            layer_info_map = json.loads(layer_info_json)
-        else:
-            layer_info_map = layer_info_json
 
-    missing_layer_ids = sorted(set(layer_ids) - set(layer_info_map.keys()))
+    retrieved_layer_ids = {row[0] for row in results}
+
+    missing_layer_ids = sorted(set(layer_ids) - retrieved_layer_ids)
     if missing_layer_ids:
         logger.error("BPE0017", "存在しないレイヤID", ",".join(missing_layer_ids))
         logger.process_error_end()
 
-    for layer_id in layer_info_map:
-        info = layer_info_map[layer_id]
-        fac_subitem_eng = info.get("fac_subitem_eng")
-        provider_id = info.get("provider_id")
-        if fac_subitem_eng is None or provider_id is None:
-            logger.error("BPE0017", "存在しないレイヤID", layer_id)
-            logger.process_error_end()
-        info["fac_data_master_table_name"] = f"data_{fac_subitem_eng}_{provider_id}"
+    layer_info_map = {}
+
+    for row in results:
+        layer_id = row[0]
+        fac_subitem_id = row[1]
+        provider_id = row[2]
+        fac_subitem_eng = row[3]
+        geometry_type = row[4]
+        authorization_pattern_id = row[5]
+
+        if authorization_pattern_id is None:
+            logger.warning("BPW0031", layer_id)
+            continue
+        elif authorization_pattern_id == 3:
+            logger.warning("BPW0032", layer_id)
+            continue
+
+        layer_info_map[layer_id] = {
+            "fac_subitem_id": fac_subitem_id,
+            "provider_id": provider_id,
+            "fac_subitem_eng": fac_subitem_eng,
+            "geometry_type": geometry_type,
+            "fac_data_master_table_name": f"data_{fac_subitem_eng}_{provider_id}",
+        }
+
+    if not layer_info_map:
+        logger.error("BPE0077", ",".join(layer_ids))
+        logger.process_error_end()
 
     return layer_info_map
 
