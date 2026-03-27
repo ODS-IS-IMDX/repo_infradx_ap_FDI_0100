@@ -270,6 +270,11 @@ def create_or_refresh_matview(matview_no_list, matview_yes_list, layer_info_map)
     db_mv_3d_schema = secret_props.get("db_mv_3d_schema")
     db_mst_schema = secret_props.get("db_mst_schema")
     db_fac_schema = secret_props.get("db_fac_schema")
+    # 日付型カラム一覧を取得
+    date_columns_str = secret_props.get("date_columns")
+    date_columns = set(
+        col.strip() for col in date_columns_str.split(",") if col.strip()
+    )
     # DDL実行前にタイムアウト無制限を設定（一度だけ）
     ddl_queries = ["SET statement_timeout = 0"]
     for layer_id in matview_no_list:
@@ -342,7 +347,13 @@ def create_or_refresh_matview(matview_no_list, matview_yes_list, layer_info_map)
         select_clauses = []
         join_clauses = []
         for col in column_names:
-            select_clauses.append(f"{eq_master_table}.{col}")
+            # 日付型カラムはto_charで文字列型に変換
+            if col in date_columns:
+                select_clauses.append(
+                    f"to_char({eq_master_table}.{col}, 'yyyy-MM-dd') AS {col}"
+                )
+            else:
+                select_clauses.append(f"{eq_master_table}.{col}")
             if col in code_columns:
                 select_clauses.append(f"code_{col}.code_name AS {col}_name")
                 join_clauses.append(
